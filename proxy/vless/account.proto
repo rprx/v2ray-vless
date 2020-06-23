@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package v2ray.core.proxy.vless;
+option csharp_namespace = "V2Ray.Core.Proxy.Vless";
+option go_package = "vless";
+option java_package = "com.v2ray.core.proxy.vless";
+option java_multiple_files = true;
+
+import "v2ray.com/core/common/protocol/headers.proto";
+
+message Account {
+  // ID of the account, in the form of a UUID, e.g., "66ad4540-b58c-4ad2-9926-ea63445a9b57".
+  string id = 1;
+  // Mess settings. Only applies to client side for now.
+  string mess = 2;
+  // Security settings. Only applies to client side.
+  v2ray.core.common.protocol.SecurityConfig security_settings = 3;
+}
