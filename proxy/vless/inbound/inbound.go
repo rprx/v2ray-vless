@@ -163,6 +163,9 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 
 			fallbacks := make(map[string]map[string]*Fallback)
 			for _, fb := range h.fallbacks {
+				if fallbacks[fb.Alpn] == nil {
+					fallbacks[fb.Alpn] = make(map[string]*Fallback)
+				}
 				fallbacks[fb.Alpn][fb.Path] = fb
 			}
 
