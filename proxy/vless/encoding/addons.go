@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 
+	"v2ray.com/core/common"
 	"v2ray.com/core/common/buf"
 	"v2ray.com/core/common/protocol"
 )
@@ -14,6 +15,12 @@ import (
 func EncodeHeaderAddons(buffer *buf.Buffer, addons *Addons) error {
 
 	switch addons.Flow {
+	case "xtls-rprx-origin":
+
+		bytes := common.Must2(proto.Marshal(addons)).([]byte)
+		common.Must(buffer.WriteByte(byte(len(bytes))))
+		common.Must2(buffer.Write(bytes))
+
 	default:
 
 		if err := buffer.WriteByte(0); err != nil {

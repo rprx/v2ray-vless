@@ -22,6 +22,7 @@ import (
 	"v2ray.com/core/proxy/vless/encoding"
 	"v2ray.com/core/transport"
 	"v2ray.com/core/transport/internet"
+	"v2ray.com/core/transport/internet/tls"
 )
 
 func init() {
@@ -106,6 +107,28 @@ func (v *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 	requestAddons := &encoding.Addons{
 		Flow: account.Flow,
+	}
+
+	if requestAddons.Flow == "xtls-rprx-origin" {
+		switch request.Command {
+		case protocol.RequestCommandMux:
+			return newError("xtls-rprx-origin doesn't support Mux").AtWarning()
+		case protocol.RequestCommandUDP:
+			if request.Port == 443 {
+				return newError("xtls-rprx-origin stopped 443 UDP").AtWarning()
+			}
+		case protocol.RequestCommandTCP:
+			iConn := conn
+			if statConn, ok := iConn.(*internet.StatCouterConnection); ok {
+				iConn = statConn.Connection
+			}
+			if tlsConn, ok := iConn.(*tls.Conn); ok {
+				tlsConn.RPRX = true
+				//tlsConn.SHOW = true
+			} else {
+				return newError("failed to use xtls-rprx-origin").AtWarning()
+			}
+		}
 	}
 
 	sessionPolicy := v.policyManager.ForLevel(request.User.Level)

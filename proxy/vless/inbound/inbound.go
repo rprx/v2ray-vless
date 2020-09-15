@@ -376,6 +376,38 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 	}
 	inbound.User = request.User
 
+	account := request.User.Account.(*vless.MemoryAccount)
+
+	responseAddons := &encoding.Addons{
+		//Flow: requestAddons.Flow,
+	}
+
+	if requestAddons.Flow == "xtls-rprx-origin" {
+		if account.Flow == requestAddons.Flow {
+			switch request.Command {
+			case protocol.RequestCommandMux:
+				return newError("xtls-rprx-origin doesn't support Mux").AtWarning()
+			case protocol.RequestCommandUDP:
+				if request.Port == 443 {
+					return newError("xtls-rprx-origin stopped 443 UDP").AtWarning()
+				}
+			case protocol.RequestCommandTCP:
+				iConn := connection
+				if statConn, ok := iConn.(*internet.StatCouterConnection); ok {
+					iConn = statConn.Connection
+				}
+				if tlsConn, ok := iConn.(*tls.Conn); ok {
+					tlsConn.RPRX = true
+					//tlsConn.SHOW = true
+				} else {
+					return newError("failed to use xtls-rprx-origin").AtWarning()
+				}
+			}
+		} else {
+			return newError(account.ID.String(), " is not able to use xtls-rprx-origin").AtWarning()
+		}
+	}
+
 	if request.Command != protocol.RequestCommandMux {
 		ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 			From:   connection.RemoteAddr(),
@@ -415,10 +447,6 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 
 	getResponse := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
-
-		responseAddons := &encoding.Addons{
-			Flow: requestAddons.Flow,
-		}
 
 		bufferWriter := buf.NewBufferedWriter(buf.NewWriter(connection))
 		if err := encoding.EncodeResponseHeader(bufferWriter, request, responseAddons); err != nil {
