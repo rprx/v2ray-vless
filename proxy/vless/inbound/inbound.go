@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -52,7 +54,8 @@ type Handler struct {
 	validator             *vless.Validator
 	dns                   dns.Client
 	fallbacks             map[string]map[string]*Fallback // or nil
-	//regexps               map[string]*regexp.Regexp       // or nil
+	regexps               map[string]*regexp.Regexp       // or nil
+	xtls_show             bool
 }
 
 // New creates a new VLess inbound handler.
@@ -105,6 +108,10 @@ func New(ctx context.Context, config *Config, dc dns.Client) (*Handler, error) {
 				}
 			}
 		}
+	}
+
+	if show, _ := os.LookupEnv("V2RAY_VLESS_XTLS_SHOW"); show == "true" {
+		handler.xtls_show = true
 	}
 
 	return handler, nil
@@ -376,6 +383,38 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 	}
 	inbound.User = request.User
 
+	account := request.User.Account.(*vless.MemoryAccount)
+
+	responseAddons := &encoding.Addons{
+		//Flow: requestAddons.Flow,
+	}
+
+	switch requestAddons.Flow {
+	case "xtls-rprx-origin":
+		if account.Flow == "xtls-rprx-origin" {
+			switch request.Command {
+			case protocol.RequestCommandMux:
+				return newError("xtls-rprx-origin doesn't support Mux").AtWarning()
+			case protocol.RequestCommandUDP:
+				return newError("xtls-rprx-origin doesn't support UDP").AtWarning()
+			case protocol.RequestCommandTCP:
+				iConn := connection
+				if statConn, ok := iConn.(*internet.StatCouterConnection); ok {
+					iConn = statConn.Connection
+				}
+				if tlsConn, ok := iConn.(*tls.Conn); ok {
+					tlsConn.RPRX = true
+					tlsConn.SHOW = h.xtls_show
+					tlsConn.MARK = "XTLS"
+				} else {
+					return newError("failed to use xtls-rprx-origin").AtWarning()
+				}
+			}
+		} else {
+			return newError(account.ID.String(), " is not able to use xtls-rprx-origin").AtWarning()
+		}
+	}
+
 	if request.Command != protocol.RequestCommandMux {
 		ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 			From:   connection.RemoteAddr(),
@@ -396,8 +435,8 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 		return newError("failed to dispatch request to ", request.Destination()).Base(err).AtWarning()
 	}
 
-	serverReader := link.Reader
-	serverWriter := link.Writer
+	serverReader := link.Reader // .(*pipe.Reader)
+	serverWriter := link.Writer // .(*pipe.Writer)
 
 	postRequest := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.DownlinkOnly)
@@ -415,10 +454,6 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 
 	getResponse := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
-
-		responseAddons := &encoding.Addons{
-			Flow: requestAddons.Flow,
-		}
 
 		bufferWriter := buf.NewBufferedWriter(buf.NewWriter(connection))
 		if err := encoding.EncodeResponseHeader(bufferWriter, request, responseAddons); err != nil {

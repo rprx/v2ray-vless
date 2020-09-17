@@ -6,6 +6,7 @@ package outbound
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"v2ray.com/core"
@@ -22,6 +23,7 @@ import (
 	"v2ray.com/core/proxy/vless/encoding"
 	"v2ray.com/core/transport"
 	"v2ray.com/core/transport/internet"
+	"v2ray.com/core/transport/internet/tls"
 )
 
 func init() {
@@ -35,6 +37,7 @@ type Handler struct {
 	serverList    *protocol.ServerList
 	serverPicker  protocol.ServerPicker
 	policyManager policy.Manager
+	xtls_show     bool
 }
 
 // New creates a new VLess outbound handler.
@@ -56,17 +59,21 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 	}
 
+	if show, _ := os.LookupEnv("V2RAY_VLESS_XTLS_SHOW"); show == "true" {
+		handler.xtls_show = true
+	}
+
 	return handler, nil
 }
 
 // Process implements proxy.Outbound.Process().
-func (v *Handler) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
+func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
 
 	var rec *protocol.ServerSpec
 	var conn internet.Connection
 
 	if err := retry.ExponentialBackoff(5, 200).On(func() error {
-		rec = v.serverPicker.PickServer()
+		rec = h.serverPicker.PickServer()
 		var err error
 		conn, err = dialer.Dial(ctx, rec.Destination())
 		if err != nil {
@@ -108,12 +115,38 @@ func (v *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		Flow: account.Flow,
 	}
 
-	sessionPolicy := v.policyManager.ForLevel(request.User.Level)
+	switch requestAddons.Flow {
+	case "xtls-rprx-origin", "xtls-rprx-origin-udp443":
+		switch request.Command {
+		case protocol.RequestCommandMux:
+			return newError("xtls-rprx-origin doesn't support Mux").AtWarning()
+		case protocol.RequestCommandUDP:
+			if requestAddons.Flow == "xtls-rprx-origin" && request.Port == 443 {
+				return newError("xtls-rprx-origin stopped UDP/443").AtWarning()
+			}
+			requestAddons.Flow = ""
+		case protocol.RequestCommandTCP:
+			iConn := conn
+			if statConn, ok := iConn.(*internet.StatCouterConnection); ok {
+				iConn = statConn.Connection
+			}
+			if tlsConn, ok := iConn.(*tls.Conn); ok {
+				tlsConn.RPRX = true
+				tlsConn.SHOW = h.xtls_show
+				tlsConn.MARK = "XTLS"
+			} else {
+				return newError("failed to use xtls-rprx-origin").AtWarning()
+			}
+			requestAddons.Flow = "xtls-rprx-origin"
+		}
+	}
+
+	sessionPolicy := h.policyManager.ForLevel(request.User.Level)
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
 
-	clientReader := link.Reader
-	clientWriter := link.Writer
+	clientReader := link.Reader // .(*pipe.Reader)
+	clientWriter := link.Writer // .(*pipe.Writer)
 
 	postRequest := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.DownlinkOnly)
