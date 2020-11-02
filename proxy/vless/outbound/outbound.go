@@ -6,11 +6,15 @@ package outbound
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"syscall"
 	"time"
 
 	"v2ray.com/core"
 	"v2ray.com/core/common"
 	"v2ray.com/core/common/buf"
+	"v2ray.com/core/common/errors"
 	"v2ray.com/core/common/net"
 	"v2ray.com/core/common/platform"
 	"v2ray.com/core/common/protocol"
@@ -28,6 +32,7 @@ import (
 
 var (
 	xtls_show = false
+	rawConn   syscall.RawConn
 )
 
 func init() {
@@ -146,6 +151,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 				xtlsConn.MARK = "XTLS"
 				if requestAddons.Flow == vless.XRD {
 					xtlsConn.DirectMode = true
+					if sc, ok := xtlsConn.Connection.(syscall.Conn); ok {
+						rawConn, _ = sc.SyscallConn()
+					}
 				}
 			} else {
 				return newError(`failed to use ` + requestAddons.Flow + `, maybe "security" is not "xtls"`).AtWarning()
@@ -206,8 +214,14 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		// default: serverReader := buf.NewReader(conn)
 		serverReader := encoding.DecodeBodyAddons(conn, request, responseAddons)
 
-		// from serverReader.ReadMultiBuffer to clientWriter.WriteMultiBufer
-		if err := buf.Copy(serverReader, clientWriter, buf.UpdateActivity(timer)); err != nil {
+		if rawConn != nil {
+			err = xtlsCopy(serverReader, clientWriter, timer, iConn.(*xtls.Conn))
+		} else {
+			// from serverReader.ReadMultiBuffer to clientWriter.WriteMultiBufer
+			err = buf.Copy(serverReader, clientWriter, buf.UpdateActivity(timer))
+		}
+
+		if err != nil {
 			return newError("failed to transfer response payload").Base(err).AtInfo()
 		}
 
@@ -218,5 +232,34 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		return newError("connection ends").Base(err).AtInfo()
 	}
 
+	return nil
+}
+
+func xtlsCopy(reader buf.Reader, writer buf.Writer, timer signal.ActivityUpdater, conn *xtls.Conn) error {
+	err := func() error {
+		for {
+			if conn.DirectIn {
+				conn.DirectIn = false
+				rawConn, _ = conn.Connection.(syscall.Conn).SyscallConn()
+				reader = buf.NewReadVReader(conn.Connection, rawConn)
+				if conn.SHOW {
+					fmt.Println(conn.MARK, "ReadV")
+				}
+			}
+			buffer, err := reader.ReadMultiBuffer()
+			if !buffer.IsEmpty() {
+				timer.Update()
+				if werr := writer.WriteMultiBuffer(buffer); werr != nil {
+					return werr
+				}
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}()
+	if err != nil && errors.Cause(err) != io.EOF {
+		return err
+	}
 	return nil
 }

@@ -6,8 +6,10 @@ package inbound
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strconv"
+	"syscall"
 	"time"
 
 	"v2ray.com/core"
@@ -35,6 +37,7 @@ import (
 
 var (
 	xtls_show = false
+	rawConn   syscall.RawConn
 )
 
 func init() {
@@ -387,6 +390,9 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 					xtlsConn.MARK = "XTLS"
 					if requestAddons.Flow == vless.XRD {
 						xtlsConn.DirectMode = true
+						if sc, ok := xtlsConn.Connection.(syscall.Conn); ok {
+							rawConn, _ = sc.SyscallConn()
+						}
 					}
 				} else {
 					return newError(`failed to use ` + requestAddons.Flow + `, maybe "security" is not "xtls"`).AtWarning()
@@ -429,8 +435,16 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 		// default: clientReader := reader
 		clientReader := encoding.DecodeBodyAddons(reader, request, requestAddons)
 
-		// from clientReader.ReadMultiBuffer to serverWriter.WriteMultiBufer
-		if err := buf.Copy(clientReader, serverWriter, buf.UpdateActivity(timer)); err != nil {
+		var err error
+
+		if rawConn != nil {
+			err = xtlsCopy(clientReader, serverWriter, timer, iConn.(*xtls.Conn))
+		} else {
+			// from clientReader.ReadMultiBuffer to serverWriter.WriteMultiBufer
+			err = buf.Copy(clientReader, serverWriter, buf.UpdateActivity(timer))
+		}
+
+		if err != nil {
 			return newError("failed to transfer request payload").Base(err).AtInfo()
 		}
 
@@ -481,5 +495,34 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection i
 		return newError("connection ends").Base(err).AtInfo()
 	}
 
+	return nil
+}
+
+func xtlsCopy(reader buf.Reader, writer buf.Writer, timer signal.ActivityUpdater, conn *xtls.Conn) error {
+	err := func() error {
+		for {
+			if conn.DirectIn {
+				conn.DirectIn = false
+				rawConn, _ = conn.Connection.(syscall.Conn).SyscallConn()
+				reader = buf.NewReadVReader(conn.Connection, rawConn)
+				if conn.SHOW {
+					fmt.Println(conn.MARK, "ReadV")
+				}
+			}
+			buffer, err := reader.ReadMultiBuffer()
+			if !buffer.IsEmpty() {
+				timer.Update()
+				if werr := writer.WriteMultiBuffer(buffer); werr != nil {
+					return werr
+				}
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}()
+	if err != nil && errors.Cause(err) != io.EOF {
+		return err
+	}
 	return nil
 }
