@@ -9,7 +9,7 @@ require (
 	github.com/google/go-cmp v0.5.3
 	github.com/gorilla/websocket v1.4.2
 	github.com/lucas-clemente/quic-go v0.18.1
-	github.com/miekg/dns v1.1.35
+	github.com/miekg/dns v1.1.40
 	github.com/pires/go-proxyproto v0.3.2
 	github.com/seiflotfy/cuckoofilter v0.0.0-20201009151232-afb285a456ab
 	github.com/stretchr/testify v1.6.1
